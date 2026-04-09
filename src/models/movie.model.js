@@ -31,11 +31,6 @@ const movieSchema = new Schema(
             type: Date,
             required: true
         },
-        posterImage: {
-            type: String, 
-            required: true,
-            trim: true 
-        }
 }, { timestamps: true }
 )
 
