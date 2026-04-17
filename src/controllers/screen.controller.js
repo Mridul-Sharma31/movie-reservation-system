@@ -33,18 +33,30 @@ export const createScreen = async (req, res, next) => {
 };
 
 // Get all screens
+
 export const getAllScreens = async (req, res, next) => {
     try {
-        const { city } = req.query;
+        const { city, page = 1, limit = 10 } = req.query;
 
         const filter = {};
         if (city) filter.city = city.toLowerCase();
 
+        const skip = (page - 1) * limit;
+
         const screens = await Screen.find(filter)
-            .sort({ createdAt: -1 });
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(parseInt(limit));
+
+        const total = await Screen.countDocuments(filter);
 
         return res.status(200).json(
-            new ApiResponse(200, screens, "Screens fetched successfully")
+            new ApiResponse(200, {
+                screens,
+                currentPage: parseInt(page),
+                totalPages: Math.ceil(total / limit),
+                totalScreens: total
+            }, "Screens fetched successfully")
         );
 
     } catch (error) {
