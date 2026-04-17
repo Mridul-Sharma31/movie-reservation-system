@@ -10,15 +10,10 @@ export const createBooking = async (req, res, next) => {
     session.startTransaction();
 
     try {
-        const { showtime, seats } = req.body; // seats: [{row: "A", seatNumber: 5}]
+        const { showtime, seats } = req.body;
         const userId = req.user._id;
 
-        // 1. Validate input
-        if (!showtime || !seats || !Array.isArray(seats) || seats.length === 0) {
-            throw new apiError(400, "Showtime and seats are required");
-        }
-
-        // 2. Get showtime
+        // 1. Validate showtime exists and get screen layout for pricing
         const showtimeDoc = await Showtime.findById(showtime)
             .populate("screen", "seatLayout")
             .session(session);
@@ -31,18 +26,7 @@ export const createBooking = async (req, res, next) => {
             throw new apiError(400, "Cannot book for this showtime");
         }
 
-        // 3. Check if seats are available
-        for (const seat of seats) {
-            const alreadyReserved = showtimeDoc.reservedSeats.find(
-                s => s.row === seat.row && s.seatNumber === seat.seatNumber
-            );
-
-            if (alreadyReserved) {
-                throw new apiError(409, `Seat ${seat.row}${seat.seatNumber} is already reserved`);
-            }
-        }
-
-        // 4. Calculate total price
+        // 2. Calculate price (still use Node.js memory for READ-ONLY operations)
         let totalAmount = 0;
         const seatsWithPrice = seats.map(seat => {
             const rowLayout = showtimeDoc.screen.seatLayout.find(
@@ -54,7 +38,7 @@ export const createBooking = async (req, res, next) => {
             }
 
             if (seat.seatNumber < 1 || seat.seatNumber > rowLayout.capacity) {
-                throw new apiError(400, `Invalid seat number: ${seat.seatNumber}`);
+                throw new apiError(400, `Invalid seat: ${seat.row}${seat.seatNumber}`);
             }
 
             totalAmount += rowLayout.price;
@@ -66,7 +50,50 @@ export const createBooking = async (req, res, next) => {
             };
         });
 
-        // 5. Create booking
+        // 3. ATOMIC UPDATE (The Critical Fix!)
+        // Tell MongoDB: "Update ONLY if these seats are NOT already reserved"
+        // The check AND write happen in ONE atomic operation at DB level
+        const updatedShowtime = await Showtime.findOneAndUpdate(
+            {
+                _id: showtime,
+                status: "SCHEDULED",
+                // ✅ THE MAGIC LINE:
+                // Only update if NONE of the requested seats exist in reservedSeats
+                reservedSeats: {
+                    $not: {
+                        $elemMatch: {
+                            row: { $in: seats.map(s => s.row) },
+                            seatNumber: { $in: seats.map(s => s.seatNumber) }
+                        }
+                    }
+                }
+            },
+            {
+                // Push ALL seats at once if condition is met
+                $push: {
+                    reservedSeats: {
+                        $each: seats.map(seat => ({
+                            row: seat.row,
+                            seatNumber: seat.seatNumber,
+                            status: "BOOKED",
+                            user: userId,
+                            lockedAt: new Date()
+                        }))
+                    }
+                }
+            },
+            { new: true, session }
+        );
+
+        // 4. If null → seats were taken between user clicking and DB writing
+        if (!updatedShowtime) {
+            throw new apiError(
+                409,
+                "One or more selected seats were just taken. Please select different seats."
+            );
+        }
+
+        // 5. Create booking record
         const booking = await Booking.create([{
             showtime,
             user: userId,
@@ -75,24 +102,11 @@ export const createBooking = async (req, res, next) => {
             status: "Confirmed"
         }], { session });
 
-        // 6. Mark seats as BOOKED in showtime
-        for (const seat of seats) {
-            showtimeDoc.reservedSeats.push({
-                row: seat.row,
-                seatNumber: seat.seatNumber,
-                status: "BOOKED",
-                user: userId,
-                lockedAt: new Date()
-            });
-        }
-
-        await showtimeDoc.save({ session });
-
-        // 7. Commit transaction
+        // 6. Commit both operations
         await session.commitTransaction();
 
         return res.status(201).json(
-            new ApiResponse(201, booking[0], "Booking created successfully")
+            new ApiResponse(201, booking[0], "Booking confirmed successfully")
         );
 
     } catch (error) {
@@ -107,13 +121,14 @@ export const createBooking = async (req, res, next) => {
 export const getUserBookings = async (req, res, next) => {
     try {
         const userId = req.user._id;
-        const { status } = req.query; // Optional filter: "Confirmed" or "Cancelled"
+        const { status, page = 1, limit = 10 } = req.query;
 
         const filter = { user: userId };
         if (status) filter.status = status;
 
+        const skip = (page - 1) * limit;
+
         const bookings = await Booking.find(filter)
-            .populate("showtime")
             .populate({
                 path: "showtime",
                 populate: [
@@ -121,17 +136,25 @@ export const getUserBookings = async (req, res, next) => {
                     { path: "screen", select: "name location city" }
                 ]
             })
-            .sort({ createdAt: -1 });
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(parseInt(limit));
+
+        const total = await Booking.countDocuments(filter);
 
         return res.status(200).json(
-            new ApiResponse(200, bookings, "Bookings fetched successfully")
+            new ApiResponse(200, {
+                bookings,
+                currentPage: parseInt(page),
+                totalPages: Math.ceil(total / limit),
+                totalBookings: total
+            }, "Bookings fetched successfully")
         );
 
     } catch (error) {
         next(error);
     }
 };
-
 // Get booking by ID
 export const getBookingById = async (req, res, next) => {
     try {
@@ -234,6 +257,7 @@ export const cancelBooking = async (req, res, next) => {
 // Get all bookings (Admin)
 export const getAllBookings = async (req, res, next) => {
     try {
+        //* extract the details from the frontend , if they dont provide it we are setting default values
         const { status, page = 1, limit = 20 } = req.query;
 
         const filter = {};
