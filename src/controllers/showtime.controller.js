@@ -67,16 +67,29 @@ export const createShowtime = async (req, res, next) => {
     }
 };
 
-// Get all showtimes
+// Get all showtimes 
 export const getAllShowtimes = async (req, res, next) => {
     try {
+        const { page = 1, limit = 20 } = req.query;
+
+        const skip = (page - 1) * limit;
+
         const showtimes = await Showtime.find({ status: "SCHEDULED" })
             .populate("movie", "title duration genre language")
             .populate("screen", "name location city screenType")
-            .sort({ startTime: 1 });
+            .sort({ startTime: 1 })
+            .skip(skip)
+            .limit(parseInt(limit));
+
+        const total = await Showtime.countDocuments({ status: "SCHEDULED" });
 
         return res.status(200).json(
-            new ApiResponse(200, showtimes, "Showtimes fetched successfully")
+            new ApiResponse(200, {
+                showtimes,
+                currentPage: parseInt(page),
+                totalPages: Math.ceil(total / limit),
+                totalShowtimes: total
+            }, "Showtimes fetched successfully")
         );
 
     } catch (error) {
@@ -129,6 +142,7 @@ export const getShowtimesByMovie = async (req, res, next) => {
 
 // Get showtimes by date
 export const getShowtimesByDate = async (req, res, next) => {
+    
     try {
         const { date } = req.params; // Format: "2025-01-15"
 
