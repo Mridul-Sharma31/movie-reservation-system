@@ -16,6 +16,10 @@ export const generateTokens = async (user) => {
         return { accessToken, refreshToken };
 
     } catch (error) {
+        
+        console.error("TOKEN GEN ERROR:", error); // <-- LOG THE REAL REASON
+        throw new Error("something went wrong while generating tokens");
+
         throw new apiError(500,"something went wrong while generating tokens");
     }
 }
@@ -37,6 +41,9 @@ export const registerUser = async (req ,res, next) =>{
             throw new apiError(409, "User already exists");
         }
 
+        console.log("Attempting to create user with:", req.body);
+        console.log("Attempting to create user with:", { username, email, fullName });
+
         const user = await User.create({
             fullName,
             email,
@@ -51,6 +58,12 @@ export const registerUser = async (req ,res, next) =>{
         if (!createdUser) {
             throw new apiError(500, "Something went wrong while registering the user");
         }
+
+        
+        const options = {
+            httpOnly: true,
+            secure: true
+        };
 
         return res
             .status(201)
