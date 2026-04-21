@@ -47,13 +47,15 @@ const userSchema = new Schema(
 )
 
 //* pre save hook to hash the password
-userSchema.pre("save", async function (next){
-    if(!this.isModified("password")) return next(); // if password is not changed or new then please dont run this hook
+userSchema.pre("save", async function () {
+    // console.log("DEBUG: Is next a function?", typeof next); // ADD THIS
+    
+    if(!this.isModified("password")) return ;
 
     const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password,salt);
+    this.password = await bcrypt.hash(this.password, salt);
 
-    next();
+    // next();
 })
 
 userSchema.methods.verifyPassword = async function (password){
@@ -62,6 +64,7 @@ userSchema.methods.verifyPassword = async function (password){
 
 //* tokens and security
 userSchema.methods.generateAccessToken = function (){
+    
     return jwt.sign(
         {
             _id:this._id,
