@@ -17,7 +17,6 @@ export const generateTokens = async (user) => {
 
     } catch (error) {
         
-        console.error("TOKEN GEN ERROR:", error); // <-- LOG THE REAL REASON
         throw new Error("something went wrong while generating tokens");
 
         throw new apiError(500,"something went wrong while generating tokens");
