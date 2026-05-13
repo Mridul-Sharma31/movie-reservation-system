@@ -2,7 +2,47 @@ import { Booking } from "../models/booking.model.js";
 import { Showtime } from "../models/showtime.model.js";
 import { apiError } from "../utils/apiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
+import { getRedisClient } from "../db/redis.js";
 import mongoose from "mongoose";
+
+
+// Temporarily lock seats (Step 1 of Booking)
+export const lockSeats = async (req, res, next) => {
+    try {
+        const { showtime, seats } = req.body;
+        const userId = req.user._id;
+        const redis = getRedisClient();
+
+        // 1. Check if ANY of the requested seats are already locked
+        for (const seat of seats) {
+            const key = `lock:${showtime}:${seat.row}:${seat.seatNumber}`;
+            const lockOwner = await redis.get(key);
+            
+            if (lockOwner && lockOwner !== userId.toString()) {
+                throw new apiError(409, `Seat ${seat.row}${seat.seatNumber} is currently locked by another user. Please choose another.`);
+            }
+        }
+
+        // 2. If all are free, lock them for 10 minutes (600 seconds)
+        const pipeline = redis.pipeline(); // Pipeline executes commands in a single batch
+        for (const seat of seats) {
+            const key = `lock:${showtime}:${seat.row}:${seat.seatNumber}`;
+            pipeline.setex(key, 600, userId.toString()); 
+        }
+        await pipeline.exec();
+
+        return res.status(200).json(
+            new ApiResponse(200, { 
+                showtime, 
+                seats, 
+                lockedUntil: new Date(Date.now() + 600 * 1000) // 10 mins from now
+            }, "Seats temporarily locked for 10 minutes. Proceed to payment.")
+        );
+
+    } catch (error) {
+        next(error);
+    }
+};
 
 // Create booking
 export const createBooking = async (req, res, next) => {
@@ -12,31 +52,36 @@ export const createBooking = async (req, res, next) => {
     try {
         const { showtime, seats } = req.body;
         const userId = req.user._id;
+        const redis = getRedisClient(); // ✅ Initialize Redis Client
 
-        // 1. Validate showtime exists and get screen layout for pricing
+        // ==========================================
+        // STEP 1: REDIS LOCK VALIDATION
+        // ==========================================
+        // Before we do ANY heavy database work, we verify the user actually holds the 10-minute lock.
+        for (const seat of seats) {
+            const key = `lock:show:${showtime}:seat:${seat.row}:${seat.seatNumber}`;
+            const lockOwner = await redis.get(key);
+            
+            if (lockOwner !== userId.toString()) {
+                throw new apiError(400, `Your lock on seat ${seat.row}${seat.seatNumber} has expired or was not acquired. Please lock the seats first.`);
+            }
+        }
+
+        // ==========================================
+        // STEP 2: MONGO DB VALIDATION & PRICING
+        // ==========================================
         const showtimeDoc = await Showtime.findById(showtime)
             .populate("screen", "seatLayout")
             .session(session);
 
-        if (!showtimeDoc) {
-            throw new apiError(404, "Showtime not found");
-        }
+        if (!showtimeDoc) throw new apiError(404, "Showtime not found");
+        if (showtimeDoc.status !== "SCHEDULED") throw new apiError(400, "Cannot book for this showtime");
 
-        if (showtimeDoc.status !== "SCHEDULED") {
-            throw new apiError(400, "Cannot book for this showtime");
-        }
-
-        // 2. Calculate price (still use Node.js memory for READ-ONLY operations)
         let totalAmount = 0;
         const seatsWithPrice = seats.map(seat => {
-            const rowLayout = showtimeDoc.screen.seatLayout.find(
-                r => r.rowCode === seat.row
-            );
-
-            if (!rowLayout) {
-                throw new apiError(400, `Invalid row: ${seat.row}`);
-            }
-
+            const rowLayout = showtimeDoc.screen.seatLayout.find(r => r.rowCode === seat.row);
+            
+            if (!rowLayout) throw new apiError(400, `Invalid row: ${seat.row}`);
             if (seat.seatNumber < 1 || seat.seatNumber > rowLayout.capacity) {
                 throw new apiError(400, `Invalid seat: ${seat.row}${seat.seatNumber}`);
             }
@@ -50,15 +95,13 @@ export const createBooking = async (req, res, next) => {
             };
         });
 
-        // 3. ATOMIC UPDATE (The Critical Fix!)
-        // Tell MongoDB: "Update ONLY if these seats are NOT already reserved"
-        // The check AND write happen in ONE atomic operation at DB level
+        // ==========================================
+        // STEP 3: ATOMIC MONGO DB UPDATE (Secondary Safety)
+        // ==========================================
         const updatedShowtime = await Showtime.findOneAndUpdate(
             {
                 _id: showtime,
                 status: "SCHEDULED",
-                // ✅ THE MAGIC LINE:
-                // Only update if NONE of the requested seats exist in reservedSeats
                 reservedSeats: {
                     $not: {
                         $elemMatch: {
@@ -69,7 +112,6 @@ export const createBooking = async (req, res, next) => {
                 }
             },
             {
-                // Push ALL seats at once if condition is met
                 $push: {
                     reservedSeats: {
                         $each: seats.map(seat => ({
@@ -85,15 +127,13 @@ export const createBooking = async (req, res, next) => {
             { new: true, session }
         );
 
-        // 4. If null → seats were taken between user clicking and DB writing
         if (!updatedShowtime) {
-            throw new apiError(
-                409,
-                "One or more selected seats were just taken. Please select different seats."
-            );
+            throw new apiError(409, "One or more selected seats were just taken.");
         }
 
-        // 5. Create booking record
+        // ==========================================
+        // STEP 4: CREATE PERMANENT BOOKING
+        // ==========================================
         const booking = await Booking.create([{
             showtime,
             user: userId,
@@ -102,7 +142,18 @@ export const createBooking = async (req, res, next) => {
             status: "Confirmed"
         }], { session });
 
-        // 6. Commit both operations
+        // ==========================================
+        // STEP 5: REDIS CLEANUP
+        // ==========================================
+        // The booking is permanently in MongoDB. We delete the temporary Redis locks.
+        const pipeline = redis.pipeline();
+        for (const seat of seats) {
+            const key = `lock:show:${showtime}:seat:${seat.row}:${seat.seatNumber}`;
+            pipeline.del(key);
+        }
+        await pipeline.exec();
+
+        // 6. Commit everything
         await session.commitTransaction();
 
         return res.status(201).json(
@@ -116,6 +167,7 @@ export const createBooking = async (req, res, next) => {
         session.endSession();
     }
 };
+
 
 // Get user's bookings
 export const getUserBookings = async (req, res, next) => {
