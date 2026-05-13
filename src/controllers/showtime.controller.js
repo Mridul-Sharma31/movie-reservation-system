@@ -3,6 +3,7 @@ import { Movie } from "../models/movie.model.js";
 import { Screen } from "../models/screen.model.js";
 import { apiError } from "../utils/apiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
+import { getRedisClient } from "../db/redis.js";
 
 const BUFFER_MINUTES = 15; // Gap between shows for cleaning
 
@@ -170,20 +171,23 @@ export const getShowtimesByDate = async (req, res, next) => {
     }
 };
 // Get available seats for a showtime
+// Get available seats for a showtime
 export const getAvailableSeats = async (req, res, next) => {
     try {
-        const { id } = req.params;
-        const LOCK_TIMEOUT = 10 * 60 * 1000; // 10 minutes
+        const { id: showtimeId } = req.params;
+        const redis = getRedisClient();
 
-        const showtime = await Showtime.findById(id)
+        const showtime = await Showtime.findById(showtimeId)
             .populate("screen", "seatLayout");
 
         if (!showtime) {
             throw new apiError(404, "Showtime not found");
         }
 
-        // Generate ALL seats from screen layout
+        // 1. Generate ALL seats and build Redis keys
         const allSeats = [];
+        const redisKeys = []; // We will batch-query all these keys at once
+
         showtime.screen.seatLayout.forEach(row => {
             for (let i = 1; i <= row.capacity; i++) {
                 allSeats.push({
@@ -191,28 +195,33 @@ export const getAvailableSeats = async (req, res, next) => {
                     seatNumber: i,
                     type: row.seatType,
                     price: row.price,
-                    status: "AVAILABLE"
+                    status: "AVAILABLE" // Default assumption
                 });
+                // Add the exact Redis key format we used in the lock controller
+                redisKeys.push(`lock:show:${showtimeId}:seat:${row.rowCode}:${i}`);
             }
         });
 
-        // Mark reserved seats
-        allSeats.forEach(seat => {
-            const reserved = showtime.reservedSeats.find(
-                r => r.row === seat.row && r.seatNumber === seat.seatNumber
+        // 2. Fetch ALL locks from Redis in ONE blazing-fast network call
+        const redisLocks = redisKeys.length > 0 ? await redis.mget(redisKeys) : [];
+
+        // 3. Sync states (MongoDB permanent vs Redis temporary)
+        allSeats.forEach((seat, index) => {
+            // Check permanent booking in MongoDB
+            const isBookedInMongo = showtime.reservedSeats.find(
+                r => r.row === seat.row && r.seatNumber === seat.seatNumber && r.status === "BOOKED"
             );
 
-            if (reserved) {
-                if (reserved.status === "BOOKED") {
-                    seat.status = "BOOKED";
-                } else if (reserved.status === "LOCKED") {
-                    // Check if lock expired
-                    const elapsed = Date.now() - new Date(reserved.lockedAt).getTime();
-                    if (elapsed < LOCK_TIMEOUT) {
-                        seat.status = "LOCKED";
-                    }
-                    // If expired → stays "AVAILABLE"
-                }
+            if (isBookedInMongo) {
+                seat.status = "BOOKED";
+                return; // Stop checking this seat, move to the next one
+            }
+
+            // Check temporary lock in Redis
+            // redisLocks array perfectly aligns with our allSeats array
+            const lockOwner = redisLocks[index];
+            if (lockOwner) {
+                seat.status = "LOCKED";
             }
         });
 
@@ -224,7 +233,7 @@ export const getAvailableSeats = async (req, res, next) => {
                     startTime: showtime.startTime
                 },
                 seats: allSeats
-            }, "Seats fetched successfully")
+            }, "Seat map synced and fetched successfully")
         );
 
     } catch (error) {
