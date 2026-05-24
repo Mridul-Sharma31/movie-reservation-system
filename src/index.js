@@ -1,20 +1,23 @@
 import dotenv from "dotenv"
 import { app } from "./app.js"
 import { connectDB } from "./db/index.js"
+import { connectRedis } from "./db/redis.js"
 
-// Load environment variables immediately
+
 dotenv.config({
     path: './.env'
 });
 
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 8000;
 
 connectDB()
-.then( ()=>
+.then(() => {
+    connectRedis(); 
+
     app.listen(PORT, () => {
         console.log(`Server is running at port : ${PORT}`);
-    })
-)
-.catch( (error) => {
-    console.log("MONGO db connection failed !!! ", err);
-}) 
+    });
+})
+.catch((error) => {
+    console.log("MONGO db connection failed !!! ", error);
+});
