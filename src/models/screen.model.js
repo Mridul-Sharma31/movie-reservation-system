@@ -56,12 +56,12 @@ const screenSchema = new Schema({
 });
 
 //  Compound Unique Index
-// "Screen 1" can exist in "Delhi" and "Mumbai", but not twice in "Delhi"
+//*By combining name and location, i am telling MongoDB: "I don't care if there are fifty 'Screen 1's. I don't care if there are fifty 'PVR' locations. BUT, there can only ever be exactly ONE 'Screen 1' at PVR Asr
 screenSchema.index({ name: 1, location: 1 }, { unique: true });
 
 // Virtual for Total Capacity
 // instead of manually updating total capacity everytime we can have this function to do it for us automatically
-
+//* not stored in db but in nodejs memory, if not  used -> data inconsistency If a theater admin adds a new row of VIP seats, backend would have to update the seatLayout array AND remember to update the totalCapacity field. If one operation succeeds and the other fails, database is corrupted
 screenSchema.virtual("totalCapacity").get(function() {
     return this.seatLayout.reduce((acc, row) => acc + row.capacity, 0);
 });
