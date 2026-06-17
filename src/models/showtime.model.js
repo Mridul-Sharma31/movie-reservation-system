@@ -1,5 +1,6 @@
 import mongoose, { Schema } from "mongoose";
 
+//* reference to movie and screen
 const showtimeSchema = new Schema({
     movie: {
         type: Schema.Types.ObjectId,
@@ -51,7 +52,10 @@ const showtimeSchema = new Schema({
 }, { timestamps: true });
 
 // COMPOUND INDEXES
+//* this one is for the frotnend when user queries showtime for a movie in ascending order we display all of the showtimes
 showtimeSchema.index({ movie: 1, startTime: 1 });
+
+//*When an admin creates a new showtime, my system must verify that the theater screen isn't already occupied. This index allows the database to instantly validate schedule overlaps without scanning irrelevant screens or times, preventing double-booked theaters
 showtimeSchema.index({ screen: 1, startTime: 1, endTime: 1 });
 
 export const Showtime = mongoose.model("Showtime", showtimeSchema);
