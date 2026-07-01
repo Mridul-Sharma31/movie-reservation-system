@@ -14,9 +14,11 @@ export const lockSeats = async (req, res, next) => {
         const redis = getRedisClient();
 
         // 1. Check if ANY of the requested seats are already locked
+        //* seats are an array of objects , check screen schema
+
         for (const seat of seats) {
-            const key = `lock:${showtime}:${seat.row}:${seat.seatNumber}`;
-            const lockOwner = await redis.get(key);
+             const key = `lock:show:${showtime}:seat:${seat.row}:${seat.seatNumber}`;
+            const lockOwner = await redis.get(key); //* does any owner exist with the same key?
             
             if (lockOwner && lockOwner !== userId.toString()) {
                 throw new apiError(409, `Seat ${seat.row}${seat.seatNumber} is currently locked by another user. Please choose another.`);
@@ -27,9 +29,9 @@ export const lockSeats = async (req, res, next) => {
         const pipeline = redis.pipeline(); // Pipeline executes commands in a single batch
         for (const seat of seats) {
             const key = `lock:${showtime}:${seat.row}:${seat.seatNumber}`;
-            pipeline.setex(key, 600, userId.toString()); 
+            pipeline.setex(key, 600, userId.toString()); //* setex == set + expire
         }
-        await pipeline.exec();
+        await pipeline.exec(); //* execute the pipeline
 
         return res.status(200).json(
             new ApiResponse(200, { 
@@ -46,13 +48,14 @@ export const lockSeats = async (req, res, next) => {
 
 // Create booking
 export const createBooking = async (req, res, next) => {
+    //* create mongo db transaction - either EVERYTHING succeeds OR NOTHING changes
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
         const { showtime, seats } = req.body;
         const userId = req.user._id;
-        const redis = getRedisClient(); // ✅ Initialize Redis Client
+        const redis = getRedisClient(); // Initialize Redis Client
 
         // ==========================================
         // STEP 1: REDIS LOCK VALIDATION
@@ -72,11 +75,15 @@ export const createBooking = async (req, res, next) => {
         // ==========================================
         const showtimeDoc = await Showtime.findById(showtime)
             .populate("screen", "seatLayout")
-            .session(session);
+            .session(session); //* this operation belongs to transaction context.
 
         if (!showtimeDoc) throw new apiError(404, "Showtime not found");
         if (showtimeDoc.status !== "SCHEDULED") throw new apiError(400, "Cannot book for this showtime");
-
+        
+        /* //* validate seats
+           //* calculate price
+           //* create final booking seat structure
+            */
         let totalAmount = 0;
         const seatsWithPrice = seats.map(seat => {
             const rowLayout = showtimeDoc.screen.seatLayout.find(r => r.rowCode === seat.row);
@@ -98,15 +105,33 @@ export const createBooking = async (req, res, next) => {
         // ==========================================
         // STEP 3: ATOMIC MONGO DB UPDATE (Secondary Safety)
         // ==========================================
+        /* //* When User A's delayed request finally hits the database, MongoDB uses Document-Level Locking. It freezes the Showtime document for a microsecond.
+            It asks: "Are the seats User A wants already inside the reservedSeats array?"
+            If no -> It pushes them in and saves. */
+        // it is important in many cases for eg one of the case can be user a has hit lock but it stays on the payment page and 10 min lock expires,
+        // now user b can lock the seat and simultaneously on the other hand user a can complete the payment and book the seat, this proves
+        // redis cannot act as a final source of truth we must ensure atomic mongodb layer 
+        // this mongo db layer freezes the document for nanoseconds hence no concurrency can occur here and one has to exit the process without any bookings
+
+
+        //*findOneAndUpdate takes three distinct arguments:
+
+//* The Filter: Which document are we modifying?
+
+//* The Update: What exact physical change are we making?
+
+//* The Options: How should MongoDB execute this command?
         const updatedShowtime = await Showtime.findOneAndUpdate(
             {
                 _id: showtime,
                 status: "SCHEDULED",
                 reservedSeats: {
-                    $not: {
-                        $elemMatch: {
-                            row: { $in: seats.map(s => s.row) },
-                            seatNumber: { $in: seats.map(s => s.seatNumber) }
+                    $not: { //*If $elemMatch finds a collision, it evaluates to TRUE. The $not flips it to FALSE, causing the entire filter to fail and blocking the write.
+                        $elemMatch: { //*This is an array iteration operator. It tells MongoDB to loop through the reservedSeats array and check if any single object inside it matches the conditions you provide.
+                            $or: seats.map(seat => ({ 
+                            row: seat.row, 
+                            seatNumber: seat.seatNumber 
+                            }))
                         }
                     }
                 }
