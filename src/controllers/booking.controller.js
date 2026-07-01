@@ -17,7 +17,7 @@ export const lockSeats = async (req, res, next) => {
         //* seats are an array of objects , check screen schema
 
         for (const seat of seats) {
-             const key = `lock:show:${showtime}:seat:${seat.row}:${seat.seatNumber}`;
+            const key = `lock:show:${showtime}:seat:${seat.row}:${seat.seatNumber}`;
             const lockOwner = await redis.get(key); //* does any owner exist with the same key?
             
             if (lockOwner && lockOwner !== userId.toString()) {
@@ -28,7 +28,7 @@ export const lockSeats = async (req, res, next) => {
         // 2. If all are free, lock them for 10 minutes (600 seconds)
         const pipeline = redis.pipeline(); // Pipeline executes commands in a single batch
         for (const seat of seats) {
-            const key = `lock:${showtime}:${seat.row}:${seat.seatNumber}`;
+            const key = `lock:show:${showtime}:seat:${seat.row}:${seat.seatNumber}`;
             pipeline.setex(key, 600, userId.toString()); //* setex == set + expire
         }
         await pipeline.exec(); //* execute the pipeline
