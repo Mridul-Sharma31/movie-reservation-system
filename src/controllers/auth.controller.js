@@ -37,9 +37,6 @@ export const registerUser = async (req ,res, next) =>{
             throw new apiError(409, "User already exists");
         }
 
-        console.log("Attempting to create user with:", req.body);
-        console.log("Attempting to create user with:", { username, email, fullName });
-
         const user = await User.create({
             fullName,
             email,
