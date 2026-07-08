@@ -25,9 +25,6 @@ export const createMovieSchema = z.object({
     releaseDate: z.string()
         .refine(val => !isNaN(Date.parse(val)), "Invalid date format"),
     
-    posterImage: z.string()
-        .url("Invalid URL format")
-        .optional()
 });
 
 export const updateMovieSchema = createMovieSchema.partial();
