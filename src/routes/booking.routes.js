@@ -19,9 +19,9 @@ router.use(verifyJWT);
 router.post("/lock", lockSeats);
 router.post("/", bookingLimiter, validate(createBookingSchema), createBooking);
 router.get("/", getUserBookings);
+router.get("/admin/all", isAdmin, getAllBookings); //* should be before id so that id doesnt capture this
 router.get("/:id", getBookingById);
 router.patch("/:id/cancel", cancelBooking);
 
-router.get("/admin/all", isAdmin, getAllBookings);
 
 export default router;
