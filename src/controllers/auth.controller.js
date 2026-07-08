@@ -16,9 +16,6 @@ export const generateTokens = async (user) => {
         return { accessToken, refreshToken };
 
     } catch (error) {
-        
-        throw new Error("something went wrong while generating tokens");
-
         throw new apiError(500,"something went wrong while generating tokens");
     }
 }
