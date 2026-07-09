@@ -9,21 +9,64 @@ import mongoose from "mongoose";
 // Temporarily lock seats (Step 1 of Booking)
 export const lockSeats = async (req, res, next) => {
     try {
-        const { showtime, seats } = req.body;
+        let { showtime, seats } = req.body; // let for seats because i am using seats.filter later on 
         const userId = req.user._id;
         const redis = getRedisClient();
 
         // 1. Check if ANY of the requested seats are already locked
         //* seats are an array of objects , check screen schema
+        
+
+
+        //! there is a problem in this code - 
+        //! 1) it doesnt check for seats if they are valid or not it blindly trusts the frontend
+        //! 2) it doesnt check if the seat is already permanently booked in mongo or not cuz if seat already booked but redis lock expired then we want to fail early not at payment page
+        // fix is these lines i am adding now - 
+        const seen = new Set();
+        seats = seats.filter(s => {
+            const k = `${s.row}-${s.seatNumber}`;
+            if (seen.has(k)) return false;
+            seen.add(k);
+            return true;
+        });
+        if (seats.length === 0) throw new apiError(400, "No valid unique seats");
+
+        // 1. Validate showtime + screen layout  (same as createBooking)
+        const showtimeDoc = await Showtime.findById(showtime)
+            .populate("screen", "seatLayout")
+            .lean();
+
+        if (!showtimeDoc) throw new apiError(404, "Showtime not found");
+        if (showtimeDoc.status !== "SCHEDULED") throw new apiError(400, "Cannot lock for this showtime");
 
         for (const seat of seats) {
-            const key = `lock:show:${showtime}:seat:${seat.row}:${seat.seatNumber}`;
-            const lockOwner = await redis.get(key); //* does any owner exist with the same key?
-            
-            if (lockOwner && lockOwner !== userId.toString()) {
-                throw new apiError(409, `Seat ${seat.row}${seat.seatNumber} is currently locked by another user. Please choose another.`);
+            const rowLayout = showtimeDoc.screen.seatLayout.find(r => r.rowCode === seat.row);
+            if (!rowLayout) throw new apiError(400, `Invalid row: ${seat.row}`);
+            if (seat.seatNumber < 1 || seat.seatNumber > rowLayout.capacity) {
+                throw new apiError(400, `Invalid seat: ${seat.row}${seat.seatNumber}`);
             }
-        }
+            // 2. Mongo permanent BOOKED check
+            const isBooked = showtimeDoc.reservedSeats?.find(
+                r => r.row === seat.row && r.seatNumber === seat.seatNumber && r.status === "BOOKED"
+            );
+            if (isBooked) throw new apiError(409, `Seat ${seat.row}${seat.seatNumber} is already booked`);
+        } 
+        // 2) Redis lock check – OPTIMIZED: 1 mget
+        const keys = seats.map(s =>
+            `lock:show:${showtime}:seat:${s.row}:${s.seatNumber}`
+        );
+
+        const owners = keys.length ? await redis.mget(keys) : [];
+
+        owners.forEach((owner, i) => {
+            if (owner && owner !== userId.toString()) {
+                const s = seats[i];
+                throw new apiError(409,
+                    `Seat ${s.row}${s.seatNumber} is currently locked by another user. Please choose another.`
+                );
+            }
+        });
+
 
         // 2. If all are free, lock them for 10 minutes (600 seconds)
         const pipeline = redis.pipeline(); // Pipeline executes commands in a single batch
