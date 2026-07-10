@@ -1,6 +1,6 @@
 import { User } from "../models/user.model.js";
 import { apiError } from "../utils/apiError.js";
-import { ApiResponse } from "../utils/ApiResponse.js";
+import { ApiResponse } from "../utils/apiResponse.js";
 
 // Get current user profile
 export const getCurrentUser = async (req, res, next) => {
@@ -54,7 +54,8 @@ export const updateCredentials = async (req, res, next) => {
         if (!username && !email) {
             throw new apiError(400, "Provide username or email to update");
         }
-
+        
+        //* why are we again querying the user? it is because req.user is sanitized and doesnt have this.password , but once we fetch from db it will have this.password with it so we can easily compare
         const user = await User.findById(req.user._id);
         const isValid = await user.verifyPassword(password);
 
@@ -74,6 +75,8 @@ export const updateCredentials = async (req, res, next) => {
         if (username?.trim()) user.username = username.trim().toLowerCase();
         if (email?.trim()) user.email = email.trim().toLowerCase();
 
+        //* most important - why? because we are using email and name as login fields, if someone changes them then they must re login as a security feature
+        //* cannot trust stale jwt data as i am signing jwt with email and name
         user.refreshToken = undefined;
         await user.save();
 

@@ -2,10 +2,14 @@ import { Showtime } from "../models/showtime.model.js";
 import { Movie } from "../models/movie.model.js";
 import { Screen } from "../models/screen.model.js";
 import { apiError } from "../utils/apiError.js";
-import { ApiResponse } from "../utils/ApiResponse.js";
+import { ApiResponse } from "../utils/apiResponse.js";
 import { getRedisClient } from "../db/redis.js";
 
 const BUFFER_MINUTES = 15; // Gap between shows for cleaning
+
+//* why populate? because if i dont then frontend has to extract screen id and movie id from the document and then make additional api calls
+//* by populating in the server i handover the complete data to the frontend , it kills latency and is more efficient for my app
+//* it is also better for frontend this way to render data of movie and screen if they need to
 
 // Create showtime (Admin)
 export const createShowtime = async (req, res, next) => {
@@ -71,18 +75,26 @@ export const createShowtime = async (req, res, next) => {
 // Get all showtimes 
 export const getAllShowtimes = async (req, res, next) => {
     try {
+        // offset pagination
         const { page = 1, limit = 20 } = req.query;
+        
 
+        //* what pages i have seen before * number of data items they had = skip them 
         const skip = (page - 1) * limit;
 
         const showtimes = await Showtime.find({ status: "SCHEDULED" })
+        //* populate -> just like join of SQL. for eg in showtime we just take object id of movie and screen but what if we want the actual objects and their feilds? we then use populate
             .populate("movie", "title duration genre language")
             .populate("screen", "name location city screenType")
-            .sort({ startTime: 1 })
-            .skip(skip)
-            .limit(parseInt(limit));
+            .sort({ startTime: 1 }) //* sorts from earliest to latest
+            .skip(skip) //* skip this much documents from the db
+            .limit(parseInt(limit)); //* the number of docs should not exceed this limit , parseint for robustness (never trust frontend)
 
-        const total = await Showtime.countDocuments({ status: "SCHEDULED" });
+        //* count the number of documents with matching criteria  
+        //* why query two times? because in first i am finding the scheduled showtimes only
+        //* now i need to tell the frontend how many showtimes are there in total so he can display to the user page x of y. the y is this query's result.
+        //* countdocuments do not load the documents into the server memory they just perform a lightweight lookup and return an int.
+        const total = await Showtime.countDocuments({ status: "SCHEDULED" }); 
 
         return res.status(200).json(
             new ApiResponse(200, {
@@ -102,6 +114,9 @@ export const getShowtimeById = async (req, res, next) => {
     try {
         const { id } = req.params;
 
+        //* no status:scheduled here cuz what if admin wants a movie which was cancelled? 
+        //* in previous controller it was expected for displaying the movies to the users hence scheduled was necessary
+        // but in this it is expected that we want the movie exactly by id regardless of its status.
         const showtime = await Showtime.findById(id)
             .populate("movie", "title duration genre language")
             .populate("screen", "name location city screenType seatLayout");
@@ -143,7 +158,7 @@ export const getShowtimesByMovie = async (req, res, next) => {
 
 // Get showtimes by date
 export const getShowtimesByDate = async (req, res, next) => {
-    
+    //* what are all the showtimes playing on this date?
     try {
         const { date } = req.params; // Format: "2025-01-15"
 
@@ -170,13 +185,17 @@ export const getShowtimesByDate = async (req, res, next) => {
         next(error);
     }
 };
-// Get available seats for a showtime
+
 // Get available seats for a showtime
 export const getAvailableSeats = async (req, res, next) => {
     try {
+        //* renaming the id to showtime id so it doesnt conflict later with other id's
         const { id: showtimeId } = req.params;
+
+        // call the redis client 
         const redis = getRedisClient();
 
+        //* need the showtime with seat layout and screens , but i only care about seatLayout hence passed as 2nd string
         const showtime = await Showtime.findById(showtimeId)
             .populate("screen", "seatLayout");
 
@@ -188,6 +207,7 @@ export const getAvailableSeats = async (req, res, next) => {
         const allSeats = [];
         const redisKeys = []; // We will batch-query all these keys at once
 
+        //* outer loop ->rows, innner loop-> columns or capacity(seats)
         showtime.screen.seatLayout.forEach(row => {
             for (let i = 1; i <= row.capacity; i++) {
                 allSeats.push({
@@ -203,6 +223,8 @@ export const getAvailableSeats = async (req, res, next) => {
         });
 
         // 2. Fetch ALL locks from Redis in ONE blazing-fast network call
+        //* mget - multiget, instead of calling redis for each entry i hand over the entire array 
+        //* if a lock exists for that index the value will be userid otherwise it will be null
         const redisLocks = redisKeys.length > 0 ? await redis.mget(redisKeys) : [];
 
         // 3. Sync states (MongoDB permanent vs Redis temporary)

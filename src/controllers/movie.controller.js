@@ -1,6 +1,6 @@
 import { Movie } from "../models/movie.model.js";
 import { apiError } from "../utils/apiError.js";
-import { ApiResponse } from "../utils/ApiResponse.js";
+import { ApiResponse } from "../utils/apiResponse.js";
 
 // Create movie (Admin only)
 export const createMovie = async (req, res, next) => {

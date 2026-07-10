@@ -1,6 +1,6 @@
 import { Screen } from "../models/screen.model.js";
 import { apiError } from "../utils/apiError.js";
-import { ApiResponse } from "../utils/ApiResponse.js";
+import { ApiResponse } from "../utils/apiResponse.js";
 
 // Create screen (Admin)
 export const createScreen = async (req, res, next) => {

@@ -1,7 +1,7 @@
 import { Booking } from "../models/booking.model.js";
 import { Showtime } from "../models/showtime.model.js";
 import { apiError } from "../utils/apiError.js";
-import { ApiResponse } from "../utils/ApiResponse.js";
+import { ApiResponse } from "../utils/apiResponse.js";
 import { getRedisClient } from "../db/redis.js";
 import mongoose from "mongoose";
 
