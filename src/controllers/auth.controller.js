@@ -1,6 +1,6 @@
 import { User } from "../models/user.model.js";
 import { apiError } from "../utils/apiError.js";
-import { ApiResponse } from "../utils/ApiResponse.js";
+import { apiResponse } from "../utils/ApiResponse.js";
 import jwt from "jsonwebtoken";
 
 //* helper function to generate tokens
