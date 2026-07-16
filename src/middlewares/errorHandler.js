@@ -2,7 +2,7 @@ import { apiError } from "../utils/apiError.js";
 
 //* next(param)
 export const globalErrorHandler = (err, req, res, next) => {
-  console.error("🔥 ACTUAL ERROR STACK:", err.stack);
+  console.error(" ACTUAL ERROR STACK:", err.stack);
 
   if (err instanceof apiError) {
     return res.status(err.statuscode).json({
