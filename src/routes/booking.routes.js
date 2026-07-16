@@ -16,7 +16,7 @@ const router = Router();
 
 router.use(verifyJWT);
 
-router.post("/lock", lockSeats);
+router.post("/lock", validate(createBookingSchema), lockSeats);
 router.post("/", bookingLimiter, validate(createBookingSchema), createBooking);
 router.get("/", getUserBookings);
 router.get("/admin/all", isAdmin, getAllBookings); //* should be before id so that id doesnt capture this
